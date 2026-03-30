@@ -38,6 +38,7 @@ GET /shortcuts/today-ship
         "order_no": "ORD20260330001",
         "customer": "张三",
         "phone": "138xxxx1234",
+        "xianyu_nick": "闲鱼用户ABC",
         "device": "EP7 运动相机",
         "model": "EP7",
         "manage_code": "EP7001",
@@ -46,7 +47,9 @@ GET /shortcuts/today-ship
         "delivery_date": "03-28",
         "delivery_city": "上海",
         "delivery_method": "顺丰快递",
-        "status": "未发货"
+        "is_packed": false,
+        "status": "未发货",
+        "notes": "备注信息"
       }
     ]
   }
