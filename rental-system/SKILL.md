@@ -1,7 +1,7 @@
 ---
 name: rental-system
-description: 租赁设备管理系统操作技能。当用户询问订单、设备、客户、发货、排单、库存、统计、闲鱼同步等相关问题时使用。支持关键词快捷指令和自然语言查询。
-version: 2.0.0
+description: 租赁设备管理系统操作技能。当用户询问订单、设备、客户、发货、排单、库存、统计、闲鱼同步、免押码、定价规则等相关问题时使用。支持关键词快捷指令和自然语言查询。
+version: 3.0.0
 ---
 
 # 租赁设备管理系统 - QClaw Skill
@@ -105,6 +105,8 @@ GET /stats/dashboard
 **返回**:
 - `orders.pending_ship` - 待发货数
 - `orders.in_progress` - 进行中数
+- `orders.unsettled` - 未结算数
+- `orders.exception` - 异常数
 - `orders.today_ship` - 今日发货数
 - `orders.today_return` - 今日归还数
 - `orders.overdue` - 逾期数
@@ -132,7 +134,7 @@ GET /stats/device-utilization?start_date=2026-04-01&end_date=2026-04-30
 ```
 GET /stats/revenue?period=month
 ```
-period 可选: `day`, `week`, `month`, `year`
+period 可选: `day`, `week`, `month`
 
 ### 财务统计
 ```
@@ -152,7 +154,7 @@ GET /orders?page=1&page_size=20&status=未发货
 **参数**:
 | 参数 | 说明 |
 |------|------|
-| `status` | 状态：未发货、进行中、已完成、未结算、异常 |
+| `status` | 状态：未发货、进行中、已完成、未结算、异常、已取消 |
 | `tab` | 特殊筛选：pending_process（待处理）|
 | `delivery_date` | 发货日期 YYYY-MM-DD |
 | `delivery_date_from/to` | 发货日期范围 |
@@ -160,6 +162,7 @@ GET /orders?page=1&page_size=20&status=未发货
 | `device_model` | 设备型号 |
 | `is_packed` | 打包状态：true/false |
 | `delivery_method` | 发货方式：快递、自提、闪送 |
+| `customer_phone` | 客户手机号 |
 
 ### 获取订单详情
 ```
@@ -220,6 +223,27 @@ Content-Type: application/json
 - `agent_type = "help"` → 需要排单、需要绑定设备
 - `agent_type = "recv"` → 不需要排单、不需要绑定设备
 
+### 从闲鱼订单创建
+```
+POST /orders/from-xianyu
+Content-Type: application/json
+
+{
+  "xianyu_order_no": "3302162799871039670",
+  "buyer_nick": "买家昵称",
+  "receiver_name": "张三",
+  "receiver_mobile": "13800138000",
+  "model": "GR3",
+  "start_date": "2026-04-01",
+  "end_date": "2026-04-07",
+  "city": "北京",
+  "pay_amount": 350,
+  "exempt_deposit_no": "my123456",
+  "seller_remark": "自提"
+}
+```
+含重复检测（code=2006），`force: true` 强制创建，`sync: true` 同步更新已存在订单。
+
 ### 更新订单
 ```
 PUT /orders/<order_no>
@@ -241,12 +265,34 @@ Content-Type: application/json
 ### 取消订单
 ```
 POST /orders/<order_no>/cancel
+Content-Type: application/json
+
+{"reason": "客户取消"}
 ```
-仅限未发货/打包好状态，物理删除订单。
+支持取消未发货/进行中/异常/已完成/未结算订单。取消时自动恢复设备状态（如无其他活跃订单）并清理财务账单。
 
 ### 切换打包状态
 ```
 POST /orders/<order_no>/toggle-packed
+```
+
+### 模糊搜索
+```
+GET /orders/search?q=张三
+```
+支持搜索：订单号、客户名、闲鱼昵称、设备型号、管理编号、代发人。
+
+### 批量创建
+```
+POST /orders/batch-create
+Content-Type: application/json
+
+{"orders": [{...}, {...}]}
+```
+
+### 批量发货
+```
+POST /orders/batch-ship
 ```
 
 ---
@@ -307,6 +353,58 @@ POST /orders/<order_no>/resolve-exception
 
 ---
 
+## 免押码接口
+
+通过支付宝小程序生成免押二维码，客户扫码后自动关联订单。
+
+### 按 ERP 订单号生成
+```
+POST /orders/<order_no>/generate-qrcode
+Content-Type: application/json
+
+{
+  "rental_days": 5,        // 可选，默认用订单起止日期
+  "total_amount": 100.00,  // 可选，默认 0.01 × 租期天数
+  "deposit_amount": 500    // 可选，留空由芝麻评估
+}
+```
+
+**响应**:
+```json
+{
+  "code": 0,
+  "data": {
+    "qrcode_url": "https://...",
+    "qrcode_base64": "data:image/png;base64,...",
+    "device_name": "佳能 IXUS130",
+    "rental_days": 5,
+    "erp_order_no": "ORD202605101347400145",
+    "expire_at": "2026-05-11T12:00:00.000Z"
+  }
+}
+```
+
+### 按闲鱼订单号生成（外部 Agent 专用）
+```
+POST /xianyu-orders/<xianyu_order_no>/generate-qrcode
+Content-Type: application/json
+```
+
+参数和响应与上方一致，额外返回 `order_no` 和 `xianyu_order_no` 字段。
+
+**外部 Agent 使用流程**:
+1. 持有闲鱼订单号 → 调用此接口生成二维码
+2. 把二维码发给客户 → 客户支付宝扫码下单
+3. 小程序自动回调关联 ERP 订单
+4. 轮询 `miniprogram-status` 确认状态
+
+### 查询免押状态
+```
+GET /orders/<order_no>/miniprogram-status
+```
+
+---
+
 ## 排单 API
 
 ### 待排单订单列表
@@ -329,6 +427,14 @@ Content-Type: application/json
 {
   "device_id": 10
 }
+```
+
+### 抢占式分配
+```
+POST /orders/<order_no>/preempt-device
+Content-Type: application/json
+
+{"device_id": 100}
 ```
 
 ### 一键自动排单
@@ -442,6 +548,81 @@ DELETE /device-groups/<group_id>
 
 ---
 
+## 库存查询 API
+
+### 型号库存查询
+```
+GET /inventory/models/<model>/availability?start_date=2026-04-01&end_date=2026-04-07&city=北京
+```
+
+**响应**:
+```json
+{
+  "code": 0,
+  "data": {
+    "model": "GR3",
+    "total_devices": 5,
+    "available_devices": 3,
+    "normal_available": 2,
+    "direct_transfer_available": 1,
+    "unavailable_reason": [
+      {"device_id": 101, "manage_code": "GR3-002", "reason": "已出租", "available_from": "2026-04-05"}
+    ]
+  }
+}
+```
+
+### 可用型号列表
+```
+GET /inventory/models/available?start_date=2026-04-01&end_date=2026-04-07
+```
+
+### 批量检查库存
+```
+POST /inventory/batch-check
+Content-Type: application/json
+
+{
+  "models": ["GR3", "X100V", "A7M4"],
+  "start_date": "2026-04-01",
+  "end_date": "2026-04-07",
+  "city": "北京"
+}
+```
+
+---
+
+## 型号定价规则 API
+
+定价规则为文本描述（如「首天70，第二天90，前三天110，续租25一天」），供 AI 客服等外部系统查询。
+
+### 获取所有定价规则
+```
+GET /models/pricing-rules
+```
+
+### 按型号查询
+```
+GET /models/<model>/pricing-rule
+```
+型号不存在时返回 `pricing_rule: null`。
+
+### 创建/更新定价规则
+```
+POST /models/<model>/pricing-rule
+Content-Type: application/json
+
+{"pricing_rule": "首天70，第二天90，前三天110，续租25一天"}
+```
+同型号已存在则更新，不存在则创建。按租户隔离。
+
+### 删除定价规则
+```
+DELETE /models/<model>/pricing-rule
+```
+
+---
+
 ## 客户管理 API
 
 ### 获取客户列表
@@ -484,13 +665,59 @@ PUT /customers/<customer_id>
 
 ---
 
-## 订单搜索
+## 账单 API
 
-### 模糊搜索
+### 账单列表
 ```
-GET /orders/search?q=张三
+GET /bills?type=income&date_from=2026-04-01&date_to=2026-04-30&page=1
 ```
-支持搜索：订单号、客户名、闲鱼昵称、设备型号、管理编号、代发人。
+响应含 summary 字段（总收入、总支出、净额）。
+
+### 订单收款记录
+```
+GET /orders/<order_no>/bills
+```
+
+### 添加收款
+```
+POST /orders/<order_no>/bills
+Content-Type: application/json
+
+{
+  "amount": 350.00,
+  "type": "income",
+  "category": "租金",
+  "payment_method": "支付宝",
+  "notes": "尾款"
+}
+```
+
+### 编辑/删除账单
+```
+PUT /bills/<bill_id>
+DELETE /bills/<bill_id>
+```
+
+---
+
+## 闲鱼订单 API
+
+### 闲鱼订单列表
+```
+GET /xianyu/orders?page=1
+```
+
+### 同步已发货状态
+```
+POST /xianyu/sync-shipped
+```
+将租赁系统中已发货的闲鱼订单同步到闲鱼平台。
+
+### 全量同步
+```
+POST /xianyu/sync-all
+```
+从闲鱼拉取全部订单并同步到租赁系统。
 
 ---
 
@@ -515,6 +742,58 @@ POST /settings/xy  // 仅管理员
 
 ---
 
+## 回调通知
+
+### 配置回调
+```
+POST /callbacks/config
+Content-Type: application/json
+
+{
+  "callback_url": "https://your-server.com/callback",
+  "callback_secret": "your_secret",
+  "events": [
+    "order.created",
+    "order.status_changed",
+    "order.delivered",
+    "order.completed",
+    "order.cancelled",
+    "device.status_changed"
+  ]
+}
+```
+
+### 回调消息格式
+```
+POST {callback_url}
+X-Signature: sha256={signature}
+X-Timestamp: 1711440000
+X-Event: order.status_changed
+
+{
+  "event": "order.status_changed",
+  "timestamp": 1711440000,
+  "data": {
+    "order_no": "ORD20260326143052",
+    "old_status": "未发货",
+    "new_status": "进行中",
+    "customer_name": "张三",
+    "device_name": "理光GR3"
+  }
+}
+```
+
+### 签名验证
+```python
+import hmac, hashlib
+def verify_signature(secret, timestamp, body, signature):
+    message = f"{timestamp}.{body}"
+    expected = "sha256=" + hmac.new(secret.encode(), message.encode(), hashlib.sha256).hexdigest()
+    return hmac.compare_digest(expected, signature)
+```
+
+---
+
 ## 关键词映射表
 
 | 用户输入 | 调用接口 |
@@ -527,6 +806,10 @@ POST /settings/xy  // 仅管理员
 | {编号}状态/设备{编号} | `GET /shortcuts/device-status/{编号}` |
 | 创建订单 {文本} | `POST /shortcuts/quick-create` |
 | 统计/概览/仪表盘 | `GET /stats/dashboard` |
+| 定价/价格/租金 | `GET /models/{model}/pricing-rule` |
+| 库存/有没有货/空闲 | `GET /inventory/models/{model}/availability` |
+| 免押码/二维码/免押 | `POST /orders/{no}/generate-qrcode` |
+| 闲鱼订单/同步闲鱼 | `GET /xianyu/orders` 或 `POST /xianyu/sync-all` |
 | 其他自然语言 | `POST /smart-query` |
 
 ---
@@ -547,12 +830,17 @@ POST /settings/xy  // 仅管理员
 |--------|------|
 | 1001 | 参数错误 |
 | 1002 | 数据验证失败/时间冲突 |
-| 1003 | 设备不存在/权限不足 |
+| 1003 | Token 过期 |
+| 1004 | 权限不足 |
+| 1005 | 签名错误 |
 | 2001 | 记录不存在 |
 | 2002 | 状态不允许操作 |
 | 2003 | 设备不存在 |
-| 3001 | 权限不足 |
-| 4001 | 有关联数据，无法删除 |
+| 2004 | 设备不可用 |
+| 2005 | 库存不足 |
+| 2006 | 闲鱼订单已存在 |
+| 3001 | 回调地址不可达 |
+| 9999 | 系统错误 |
 
 ---
 
@@ -564,6 +852,9 @@ POST /settings/xy  // 仅管理员
                  ↘ 未结算（代发订单）→ 已完成
          ↘ 异常 → 已完成
 ```
+
+### 订单取消
+支持取消未发货/进行中/异常/已完成/未结算订单。取消时自动恢复设备状态（如无其他活跃订单），并清理关联的财务账单。
 
 ### 代发订单
 - `is_agent=True` 表示代发订单
@@ -581,6 +872,10 @@ POST /settings/xy  // 仅管理员
 - 发货日期 = 起租日期 - 发货物流天数
 - 可用日期 = 归还日期 + 回仓物流天数
 
+### 账单类型
+- `order` scope：订单内记账（进行中的收支跟踪）
+- `finance` scope：正式财务账单（完结时自动汇总生成）
+
 ---
 
 ## 使用示例
@@ -588,14 +883,14 @@ POST /settings/xy  // 仅管理员
 ### 示例 1: 查询今日发货
 ```
 用户: 今天要发哪些货？
-QClaw: 调用 GET /shortcuts/today-ship
+Agent: 调用 GET /shortcuts/today-ship
 响应: 今天共有 5 单待发货，3 单已发货...
 ```
 
 ### 示例 2: 快速创建订单
 ```
 用户: 帮我创建一个订单，王五，EP7，4月1号到4月7号，北京
-QClaw: 调用 POST /shortcuts/quick-create
+Agent: 调用 POST /shortcuts/quick-create
        Body: {"text": "王五 EP7 4月1到4月7日 北京"}
 响应: 订单创建成功，订单号 ORD20260401xxx
 ```
@@ -603,31 +898,44 @@ QClaw: 调用 POST /shortcuts/quick-create
 ### 示例 3: 查设备状态
 ```
 用户: EP7001 这个设备现在什么状态？
-QClaw: 调用 GET /shortcuts/device-status/EP7001
+Agent: 调用 GET /shortcuts/device-status/EP7001
 响应: EP7001 当前状态：已租，租给张三，4月7日归还
 ```
 
 ### 示例 4: 排单
 ```
 用户: 帮我把所有待排单的订单自动排一下
-QClaw: 调用 POST /scheduling/auto
+Agent: 调用 POST /scheduling/auto
 响应: 自动排单完成，成功 5 单，失败 2 单
 ```
 
-### 示例 5: 代发订单
+### 示例 5: 生成免押二维码
 ```
-用户: 创建一个订单，来源是帮人发，代发人叫海达
-QClaw: 调用 POST /orders
-       Body: {"customer": {...}, "source": "帮人发 海达", ...}
-响应: 订单创建成功，标记为代发订单
+用户: 给闲鱼订单 3302162799871039670 生成免押码
+Agent: 调用 POST /xianyu-orders/3302162799871039670/generate-qrcode
+响应: 二维码已生成，发给客户扫码即可
 ```
 
-### 示例 6: 发货
+### 示例 6: 查询定价规则
 ```
-用户: 把订单 ORD20260401xxx 发货，快递单号 SF123456
-QClaw: 调用 POST /orders/ORD20260401xxx/ship
-       Body: {"tracking_no": "SF123456"}
-响应: 发货成功，状态已同步闲鱼
+用户: GR3 的定价规则是什么？
+Agent: 调用 GET /models/GR3/pricing-rule
+响应: 首天70，第二天90，前三天110，续租25一天
+```
+
+### 示例 7: 查询库存
+```
+用户: 4月1号到4月7号 GR3 有货吗？
+Agent: 调用 GET /inventory/models/GR3/availability?start_date=2026-04-01&end_date=2026-04-07
+响应: GR3 共 5 台，可用 3 台，1 台可直连发货
+```
+
+### 示例 8: 代发订单
+```
+用户: 创建一个订单，来源是帮人发，代发人叫海达
+Agent: 调用 POST /orders
+       Body: {"customer": {...}, "source": "帮人发 海达", ...}
+响应: 订单创建成功，标记为代发订单
 ```
 
 ---
@@ -640,3 +948,5 @@ QClaw: 调用 POST /orders/ORD20260401xxx/ship
 4. **冲突检测**: 分配设备和修改编号时会自动检测时间冲突
 5. **闲鱼同步**: 快递发货自动同步闲鱼，自提/闪送需手动
 6. **代发订单**: `别人发` 类型不需要排单，直接发货即可
+7. **免押二维码**: 每次调用生成新预订单，旧的自动过期
+8. **定价规则**: 按型号+租户唯一，供 AI 客服查询报价
