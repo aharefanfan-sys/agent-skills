@@ -11,8 +11,95 @@ version: 3.0.0
 ## API 基础信息
 
 - **Base URL**: `https://your-domain.com/openapi/v1`
-- **认证方式**: Bearer Token (`Authorization: Bearer <token>`)
 - **响应格式**: JSON
+
+---
+
+## 认证方式
+
+系统有三种认证方式，绝大多数接口使用 **方式一**。
+
+### 方式一：OAuth2 Bearer Token（主要）
+
+适用于所有业务 API 接口。
+
+**1. 获取 Token（client_credentials 模式）**
+
+在 ERP 开发者平台创建应用后，获得 `client_id`（AppKey）和 `client_secret`（AppSecret），然后：
+
+```
+POST /openapi/v1/oauth/token
+Content-Type: application/x-www-form-urlencoded
+
+grant_type=client_credentials&client_id=你的AppKey&client_secret=你的AppSecret
+```
+
+**响应**:
+```json
+{
+  "code": 0,
+  "data": {
+    "access_token": "eyJhbG...",
+    "refresh_token": "dGhpcyBpcy...",
+    "token_type": "Bearer",
+    "expires_in": 2592000,
+    "scope": "order:read order:write device:read inventory:read customer:read callback:manage"
+  }
+}
+```
+
+**2. 使用 Token**
+
+```
+Authorization: Bearer {access_token}
+```
+
+**3. 刷新 Token**
+
+```
+POST /openapi/v1/oauth/token
+
+grant_type=refresh_token&refresh_token=xxx&client_id=xxx&client_secret=xxx
+```
+
+**Token 有效期**: 30 天（refresh_token 90 天）
+
+### 方式二：App 用户登录
+
+适用于移动端应用，用用户名密码直接换 Token。
+
+```
+POST /openapi/v1/auth/login
+Content-Type: application/json
+
+{"username": "admin", "password": "admin123"}
+```
+
+返回相同的 `access_token`，额外包含用户信息和租户信息。Token 有效期 30 天。
+
+### 方式三：X-API-Key（小程序回调专用）
+
+仅用于小程序扫码下单的回调接口（`/miniprogram-order-callback` 和 `/miniprogram-order-unlink`），不走 OAuth。
+
+```
+X-API-Key: {MINIPROGRAM_API_KEY}
+```
+
+此 Key 在 ERP 系统设置中配置。
+
+### 权限范围（Scope）
+
+| Scope | 说明 |
+|-------|------|
+| `order:read` | 查询订单、统计 |
+| `order:write` | 创建/修改/取消订单、发货、完结 |
+| `device:read` | 查询设备 |
+| `device:write` | 设备管理、上报问题、分组 |
+| `inventory:read` | 查询库存、定价规则 |
+| `inventory:write` | 管理物流规则、定价规则 |
+| `customer:read` | 查询客户 |
+| `customer:write` | 创建/修改客户 |
+| `callback:manage` | 管理回调配置 |
 
 ---
 
@@ -402,6 +489,26 @@ Content-Type: application/json
 ```
 GET /orders/<order_no>/miniprogram-status
 ```
+
+### 小程序下单回调（X-API-Key 认证）
+```
+POST /miniprogram-order-callback
+X-API-Key: {MINIPROGRAM_API_KEY}
+Content-Type: application/json
+
+{"erp_order_no": "ORD20260510xxx", "mp_order_no": "小程序订单号"}
+```
+客户扫码下单成功后，小程序自动调用此接口关联 ERP 订单并更新 `exempt_deposit_no`。
+
+### 小程序订单解绑（X-API-Key 认证）
+```
+POST /miniprogram-order-unlink
+X-API-Key: {MINIPROGRAM_API_KEY}
+Content-Type: application/json
+
+{"erp_order_no": "ORD20260510xxx", "mp_order_no": "小程序订单号"}
+```
+小程序订单取消后自动解除关联。
 
 ---
 
